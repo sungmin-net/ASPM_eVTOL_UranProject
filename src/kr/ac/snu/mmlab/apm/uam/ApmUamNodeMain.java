@@ -84,6 +84,7 @@ public class ApmUamNodeMain {
     private static KeyStore mKeyStore = null;
     private static SSLSocketFactory mTlsSocketFactory = null;
     private static CertificateFactory mCertFactory = null;
+    private static Object mLock = new Object();
 
     static Thread mBroadcaster = new Thread(new Runnable() {
 
@@ -164,16 +165,16 @@ public class ApmUamNodeMain {
                 for (File f : curDir.listFiles()) {
                     if (f.isDirectory() && f.getName().startsWith(POLICY_DIR_PREFIX) &&
                             Long.parseLong(f.getName().replace(POLICY_DIR_PREFIX, "")) > mPeerVer) {
+
                         zipOutHelper(f, f.getName(), zos);
                     }
                 }
-                zos.close();
+                zos.flush();
+                zos.finish();
 
             } catch (Exception e) {
                 e.printStackTrace();
             } finally {
-                System.out.println("# Responder stopped.");
-                mIsResponding = false;
                 if (socket != null && !socket.isClosed()) {
                     try {
                         socket.close();
@@ -181,6 +182,8 @@ public class ApmUamNodeMain {
                         e.printStackTrace();
                     }
                 }
+                System.out.println("# Responder stopped.");
+                mIsResponding = false;
             }
         }
 
@@ -190,6 +193,7 @@ public class ApmUamNodeMain {
                 return;
             }
             if (fileToZip.isDirectory()) {
+                fileName = "TEMP_" + fileName;
                 if (fileName.endsWith("/")) {
                     zos.putNextEntry(new ZipEntry(fileName));
                 } else {
@@ -226,79 +230,91 @@ public class ApmUamNodeMain {
 
         @Override
         public void run() {
-            System.out.println("# Updater started.");
-            mIsUpdating = true;
-            SSLServerSocket servSock = null;
-            try {
-                byte[] buf = new byte[ TLS_BUFFER_SIZE ];
+            synchronized (mLock) {
+                System.out.println("# Updater started.");
+                mIsUpdating = true;
+                SSLServerSocket servSock = null;
+                try {
+                    byte[] buf = new byte[ TLS_BUFFER_SIZE ];
 
-                // 1. Open TLS server to receive newer policy
-                SSLServerSocketFactory sslServSockFactory =
-                        (SSLServerSocketFactory) SSLServerSocketFactory.getDefault();
-                servSock = (SSLServerSocket) sslServSockFactory.createServerSocket(
-                        0 /* random available port */);
-                servSock.setEnabledCipherSuites(servSock.getSupportedCipherSuites());
+                    // 1. Open TLS server to receive newer policy
+                    SSLServerSocketFactory sslServSockFactory =
+                            (SSLServerSocketFactory) SSLServerSocketFactory.getDefault();
+                    servSock = (SSLServerSocket) sslServSockFactory.createServerSocket(
+                            0 /* random available port */);
+                    servSock.setEnabledCipherSuites(servSock.getSupportedCipherSuites());
 
-                // 2. Send newer policy requesting msg
-                String reqMsg = getRequestMsg(InetAddress.getLocalHost().getHostAddress(),
-                        servSock.getLocalPort());
-                DatagramPacket reqPacket = new DatagramPacket(reqMsg.getBytes(),
-                        reqMsg.getBytes().length, mPeerAddr, BROADCAST_PORT);
-                mUdpSocket.send(reqPacket);
-                System.out.println("# Requested " + mPeerUid + " "
-                        + "to send newer APM policies.");
+                    // 2. Send newer policy requesting msg
+                    String reqMsg = getRequestMsg(InetAddress.getLocalHost().getHostAddress(),
+                            servSock.getLocalPort());
+                    DatagramPacket reqPacket = new DatagramPacket(reqMsg.getBytes(),
+                            reqMsg.getBytes().length, mPeerAddr, BROADCAST_PORT);
+                    mUdpSocket.send(reqPacket);
+                    System.out.println("# Requested " + mPeerUid + " "
+                            + "to send newer APM policies.");
 
-                // 3. receive peer's APM policies
-                // Note: a single zip stream can have multiple APM policy directories
-                SSLSocket recvSock = (SSLSocket) servSock.accept();
-                ZipInputStream zis = new ZipInputStream(recvSock.getInputStream());
-                ZipEntry zipEntry = zis.getNextEntry();
-                File curDir = new File(System.getProperty("user.dir"));
-                while (zipEntry != null) {
-                    File destFile = new File(curDir, zipEntry.getName());
+                    // 3. receive peer's APM policies
+                    // Note: a single zip stream can have multiple APM policy directories
+                    SSLSocket recvSock = (SSLSocket) servSock.accept();
+                    ZipInputStream zis = new ZipInputStream(recvSock.getInputStream());
+                    ZipEntry zipEntry = zis.getNextEntry();
+                    File curDir = new File(System.getProperty("user.dir"));
+                    List<File> tempDirList = new ArrayList<>();
+                    while (zipEntry != null) {
+                        File destFile = new File(curDir, zipEntry.getName());
 
-                    String destDirPath = curDir.getCanonicalPath();
-                    String destFilePath = destFile.getCanonicalPath();
-
-                    if (!destFilePath.startsWith(destDirPath + File.separator)) {
-                        throw new IOException("Entry is outside of the target dir: " +
-                                zipEntry.getName());
-                    }
-
-                    if (zipEntry.isDirectory()) {
-                        if (!destFile.isDirectory() && !destFile.mkdirs()) {
-                            throw new IOException("Failed to create directory " + destFile);
-                        }
-                    } else {
-                        File parent = destFile.getParentFile();
-                        if (!parent.isDirectory() && !parent.mkdirs()) {
-                            throw new IOException("Failed to create directory " + parent);
+                        if (destFile.isDirectory()) {
+                            tempDirList.add(destFile);
                         }
 
-                        // write file content
-                        FileOutputStream os = new FileOutputStream(destFile);
-                        int len;
-                        while ((len = zis.read(buf)) > 0) {
-                            os.write(buf, 0, len);
+                        String destDirPath = curDir.getCanonicalPath();
+                        String destFilePath = destFile.getCanonicalPath();
+
+                        if (!destFilePath.startsWith(destDirPath + File.separator)) {
+                            throw new IOException("Entry is outside of the target dir: " +
+                                    zipEntry.getName());
                         }
-                        os.close();
+
+                        if (zipEntry.isDirectory()) {
+                            if (!destFile.isDirectory() && !destFile.mkdirs()) {
+                                throw new IOException("Failed to create directory " + destFile);
+                            }
+                        } else {
+                            File parent = destFile.getParentFile();
+                            if (!parent.isDirectory() && !parent.mkdirs()) {
+                                throw new IOException("Failed to create directory " + parent);
+                            }
+
+                            // write file content
+                            FileOutputStream os = new FileOutputStream(destFile);
+                            int len;
+                            while ((len = zis.read(buf)) > 0) {
+                                os.write(buf, 0, len);
+                            }
+                            os.flush();
+                            os.close();
+                        }
+                        zipEntry = zis.getNextEntry();
                     }
-                    zipEntry = zis.getNextEntry();
-                }
-                zis.closeEntry();
-                zis.close();
-                refreshCurrentApmPolicy();
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
-                System.out.println("# Updater stopped.");
-                mIsUpdating = false;
-                if (servSock != null && !servSock.isClosed()) {
-                    try {
-                        servSock.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
+
+                    for (File tempDir : tempDirList) {
+                        File destDir = new File(tempDir.getName().substring(5 /* prefix "TEMP_" */,
+                                tempDir.getName().length()));
+                        tempDir.renameTo(destDir);
                     }
+                    refreshCurrentApmPolicy();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                } finally {
+                    if (servSock != null && !servSock.isClosed()) {
+                        try {
+                            servSock.close();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    System.out.println("# Updater stopped.");
+                    mIsUpdating = false;
                 }
             }
         }
@@ -346,16 +362,6 @@ public class ApmUamNodeMain {
 
                     System.out.println("# RECEIVED: " + msg);
 
-                    if (mIsUpdating) {
-                        System.out.println("# DISCARDED: Node is being updated.");
-                        continue;
-                    }
-
-                    if (mIsResponding) {
-                        System.out.println("# DISCARDED: Node is responding request.");
-                        continue;
-                    }
-
                     // verify msg
                     // 1. Peer cert verification
                     byte[] peerCertBytes = Base64.getDecoder().decode(msgJson.getString(
@@ -383,9 +389,10 @@ public class ApmUamNodeMain {
                         continue;
                     }
 
-                    // Case#1. peer's policy version is higher than mine, call Updater.
                     long peerVersion = peerSigned.getJSONObject(Signed.CurPolicyVer.ordinal())
                             .getLong(Signed.CurPolicyVer.toString());
+
+                    // Case#1. peer's policy version is higher than mine, call Updater.
                     if (peerVersion > mLastApmPolicyVer) {
                         new Updater(packet.getAddress(), peerUid).start();
                         continue;
@@ -394,7 +401,6 @@ public class ApmUamNodeMain {
                     // Case#2. peer requests new APM policies
                     if (peerSigned.length() >= 4 && peerSigned.getJSONObject(
                             Signed.ServInfo.ordinal()).has(Signed.ServInfo.toString())) {
-                        System.out.println(2222);
                         String servInfo = peerSigned.getJSONObject(
                                 Signed.ServInfo.ordinal()).getString(
                                 Signed.ServInfo.toString());
