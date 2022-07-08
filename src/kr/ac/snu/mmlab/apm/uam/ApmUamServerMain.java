@@ -220,25 +220,27 @@ public class ApmUamServerMain {
                 Map<String, Term> defaultRestrictionMap = mRegulation.get("ALL");
                 Map<String, Term> targetRestrictionMap = mRegulation.get(clientUID);
 
-                for (Restriction r : Restriction.values()) {
+                if (defaultRestrictionMap != null) {
+                    for (Restriction r : Restriction.values()) {
 
-                    Term curTerm = null;
-                    Term defaultTerm = defaultRestrictionMap.get(r.toString());
-                    if (defaultTerm != null && isValidTerm(defaultTerm)) {
-                        curTerm = defaultTerm;
-                    }
+                        Term curTerm = null;
+                        Term defaultTerm = defaultRestrictionMap.get(r.toString());
+                        if (defaultTerm != null && isValidTerm(defaultTerm)) {
+                            curTerm = defaultTerm;
+                        }
 
-                    Term targetTerm = null;
-                    if (targetRestrictionMap != null) {
-                        targetTerm = targetRestrictionMap.get(r.toString());
-                    }
+                        Term targetTerm = null;
+                        if (targetRestrictionMap != null) {
+                            targetTerm = targetRestrictionMap.get(r.toString());
+                        }
 
-                    if (targetTerm != null && isValidTerm(targetTerm)) {
-                        curTerm = targetTerm;
-                    }
+                        if (targetTerm != null && isValidTerm(targetTerm)) {
+                            curTerm = targetTerm;
+                        }
 
-                    if (curTerm != null) {
-                        ret.put(new JSONObject().put(r.toString(), curTerm.enforced));
+                        if (curTerm != null) {
+                            ret.put(new JSONObject().put(r.toString(), curTerm.enforced));
+                        }
                     }
                 }
 
