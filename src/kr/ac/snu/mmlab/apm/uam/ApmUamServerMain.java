@@ -259,6 +259,9 @@ public class ApmUamServerMain {
                 }
 
                 // 2. check positioning condition
+		// Note that radius and altitude are meter unit. But, latitude and longitude are
+		// NOT meter unit but GPS coordinates. So, distance calculation must be
+		// complemented in real world application
                 double distance = Math.sqrt(Math.pow(curTerm.latitude - mLatitude, 2)
                         + Math.pow(curTerm.latitude - mLatitude, 2)
                         + Math.pow(curTerm.longitude - mLongitude, 2)
